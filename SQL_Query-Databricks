@@ -1,1 +1,106 @@
+SELECT * FROM sales_case_study_2;
 
+--Below Creating a Cleaned Table with Derived Fields that will compute unit price, gross profit, profit %, and per-unit profit.
+
+SELECT
+    -- Basic Data
+    CAST(`Date` AS DATE) AS sale_date,
+    `Sales`,
+    `Cost Of Sales`,
+    `Quantity Sold`,
+
+    -- Metric 1: Daily Sales Price Per Unit (Rand/Unit)
+    `Sales` / NULLIF(`Quantity Sold`, 0) AS daily_sales_price_per_unit,
+
+    -- Metric 2: Overall Average Unit Sales Price (Rand/Unit) - Calculated using a Window Function
+    AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER() AS overall_avg_unit_sales_price,
+
+    -- Metric 3 & 4: Daily % Gross Profit (They are mathematically the same)
+    (`Sales` - `Cost Of Sales`) / NULLIF(`Sales`, 0) AS daily_percent_gross_profit,
+
+    -- Metric 6: Interesting Insight - Classify sales days relative to overall averages
+    CASE
+        WHEN (`Sales` / NULLIF(`Quantity Sold`, 0)) < AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER()
+             AND `Quantity Sold` > AVG(`Quantity Sold`) OVER() THEN 'Potential Promotion Day (High Volume, Low Price)'
+        WHEN (`Sales` / NULLIF(`Quantity Sold`, 0)) < AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER() THEN 'Low Price Day'
+        WHEN `Quantity Sold` > AVG(`Quantity Sold`) OVER() THEN 'High Volume Day'
+        ELSE 'Normal Day'
+    END AS sales_day_classification
+
+FROM 
+    sales_case_study_2
+
+ORDER BY
+    sale_date;
+-----------------------------------------------------------------------------------------------------------------------
+SELECT * FROM sales_case_study_2;
+
+-- Creating a Cleaned Table with Derived Fields
+SELECT
+    CAST(`Date` AS DATE) AS sale_date,
+    `Sales`,
+    `Cost Of Sales`,
+    `Quantity Sold`,
+    `Sales` / NULLIF(`Quantity Sold`, 0) AS daily_sales_price_per_unit,
+    AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER() AS overall_avg_unit_sales_price,
+    (`Sales` - `Cost Of Sales`) / NULLIF(`Sales`, 0) AS daily_percent_gross_profit,
+    CASE
+        WHEN (`Sales` / NULLIF(`Quantity Sold`, 0)) < AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER()
+             AND `Quantity Sold` > AVG(`Quantity Sold`) OVER() THEN 'Potential Promotion Day (High Volume, Low Price)'
+        WHEN (`Sales` / NULLIF(`Quantity Sold`, 0)) < AVG(`Sales` / NULLIF(`Quantity Sold`, 0)) OVER() THEN 'Low Price Day'
+        WHEN `Quantity Sold` > AVG(`Quantity Sold`) OVER() THEN 'High Volume Day'
+        ELSE 'Normal Day'
+    END AS sales_day_classification
+FROM 
+    sales_case_study_2
+ORDER BY
+    sale_date;
+
+-- CTE 1: Calculate Daily Price and Quantity, and use LAG to fetch the previous day's values
+WITH lagged_metrics AS (
+    SELECT
+        CAST(`Date` AS DATE) AS sale_date,
+        `Quantity Sold` AS Q_New,
+        `Sales` / NULLIF(`Quantity Sold`, 0) AS P_New,
+        LAG(`Quantity Sold`, 1, 0) OVER (ORDER BY CAST(`Date` AS DATE)) AS Q_Old,
+        LAG(`Sales` / NULLIF(`Quantity Sold`, 0), 1, 0) OVER (ORDER BY CAST(`Date` AS DATE)) AS P_Old
+    FROM
+        sales_case_study_2
+    WHERE `Quantity Sold` > 0 AND `Sales` > 0
+),
+ped_candidates AS (
+    SELECT
+        sale_date,
+        P_New, Q_New, P_Old, Q_Old,
+        NULLIF((Q_New - Q_Old) / NULLIF((Q_New + Q_Old) / 2, 0), 0) AS pct_change_quantity,
+        NULLIF((P_New - P_Old) / NULLIF((P_New + P_Old) / 2, 0), 0) AS pct_change_price,
+        (P_New - P_Old) / NULLIF(P_Old, 0) AS price_drop_pct
+    FROM
+        lagged_metrics
+    WHERE P_Old > 0 AND P_New > 0 AND Q_Old > 0 AND Q_New > 0
+),
+top_3_promotions AS (
+    SELECT
+        sale_date,
+        (pct_change_quantity / NULLIF(pct_change_price, 0)) AS price_elasticity_of_demand
+    FROM
+        ped_candidates
+    WHERE
+        price_drop_pct < -0.05
+        AND pct_change_quantity > 0
+    ORDER BY
+        price_drop_pct ASC,
+        pct_change_quantity DESC
+    LIMIT 3
+)
+SELECT
+    'Metric 5 - Price Elasticity of Demand' AS metric_group,
+    'Baseline Period: Previous Day (Lag=1)' AS baseline_definition,
+    sale_date AS promotion_day,
+    price_elasticity_of_demand,
+    CASE
+        WHEN price_elasticity_of_demand < -1 THEN 'Demand is Elastic (Good Response to Price Drop)'
+        WHEN price_elasticity_of_demand >= -1 AND price_elasticity_of_demand < 0 THEN 'Demand is Inelastic (Poor Response to Price Drop)'
+        ELSE 'Inconclusive or Unexpected'
+    END AS performance_assessment
+FROM top_3_promotions;
